@@ -16,12 +16,10 @@ typedef struct {
 } state_t;
 
 #include "pdb_table.h"
-
 #ifndef SOLVER_NO_MAIN
 static const char move_names[MOVES][3] = {
     "R", "R2", "R'", "B", "B2", "B'", "D", "D2", "D'"
 };
-
 static int valid(const state_t *s)
 {
     uint8_t mask = 0;
@@ -39,22 +37,31 @@ static int valid(const state_t *s)
     }
     return mask == 0x7f && osum == 0;
 }
-
 static int parse_state(const char *input, state_t *s)
 {
+    /*
+     * Do not read past the first NUL byte.  The old version indexed all 14
+     * characters unconditionally, so a short argument caused an out-of-bounds
+     * read before it was rejected.
+     */
     for (int i = 0; i < 14; ++i) {
+        const unsigned char ch = (unsigned char)input[i];
+        if (ch == '\0')
+            return 0;
+
         const int limit = i < 7 ? 7 : 3;
-        if (input[i] < '1' || input[i] > '0' + limit)
+        if (ch < '1' || ch > (unsigned char)('0' + limit))
             return 0;
         if (i < 7)
-            s->p[i] = (uint8_t)(input[i] - '1');
+            s->p[i] = (uint8_t)(ch - '1');
         else
-            s->o[i - 7] = (uint8_t)(input[i] - '1');
+            s->o[i - 7] = (uint8_t)(ch - '1');
     }
+
+    /* If the first 14 bytes were present, byte 14 is safe to inspect. */
     return input[14] == '\0' && valid(s);
 }
 #endif
-
 static uint8_t smaller_after(const uint8_t p[CUBIES], uint8_t i)
 {
     uint8_t n = 0;
@@ -62,7 +69,6 @@ static uint8_t smaller_after(const uint8_t p[CUBIES], uint8_t i)
         n = (uint8_t)(n + (p[j] < p[i]));
     return n;
 }
-
 /* Same Lehmer rank as upstream solver.c, but no variable multiply. */
 static uint16_t rank_perm(const uint8_t p[CUBIES])
 {
@@ -74,7 +80,6 @@ static uint16_t rank_perm(const uint8_t p[CUBIES])
     r = (r << 1) + smaller_after(p, 5);            /* *2 */
     return (uint16_t)r;
 }
-
 static uint16_t rank_ori(const uint8_t o[CUBIES])
 {
     uint16_t r = o[0];
@@ -85,7 +90,6 @@ static uint16_t rank_ori(const uint8_t o[CUBIES])
     r = (uint16_t)((r << 1) + r + o[5]);
     return r;
 }
-
 static uint8_t rank_partial_from_perm(const uint8_t p[CUBIES])
 {
     uint8_t a = 0, b = 0, c = 0;
@@ -99,7 +103,6 @@ static uint8_t rank_partial_from_perm(const uint8_t p[CUBIES])
     /* a*30 + bi*5 + ci, using shifts/adds only. */
     return (uint8_t)(((a << 5) - (a << 1)) + (bi << 2) + bi + ci);
 }
-
 static uint8_t pdb_get(uint16_t o, uint8_t pp)
 {
     /* 105 = 64 + 32 + 8 + 1. Rows are even-sized before packing. */
@@ -108,14 +111,12 @@ static uint8_t pdb_get(uint16_t o, uint8_t pp)
     const uint8_t x = pdb_table[row + (pp >> 1)];
     return (pp & 1u) ? (uint8_t)(x >> 4) : (uint8_t)(x & 0x0f);
 }
-
 static uint8_t heuristic(uint16_t p, uint16_t o, uint8_t pp)
 {
     const uint8_t a = perm_dist[p];
     const uint8_t b = pdb_get(o, pp);
     return a > b ? a : b;
 }
-
 typedef struct {
     uint16_t p[MAX_DEPTH + 1];
     uint16_t o[MAX_DEPTH + 1];
@@ -129,13 +130,11 @@ typedef struct {
     uint8_t entered[MAX_DEPTH + 1];
     uint8_t path[MAX_DEPTH];
 } search_t;
-
 static int bounded_search(search_t *s, uint8_t bound, uint32_t *nodes)
 {
     uint8_t depth = 0;
     s->last_face[0] = NO_FACE;
     s->entered[0] = 0;
-
     for (;;) {
         if (!s->entered[depth]) {
             ++*nodes;
@@ -150,7 +149,6 @@ static int bounded_search(search_t *s, uint8_t bound, uint32_t *nodes)
             s->turn[depth] = 0;
             s->entered[depth] = 1;
         }
-
         for (;;) {
             uint8_t f = s->face[depth];
             if (f >= 3)
@@ -165,7 +163,6 @@ static int bounded_search(search_t *s, uint8_t bound, uint32_t *nodes)
                 s->cand_o[depth] = s->o[depth];
                 s->cand_pp[depth] = s->pp[depth];
             }
-
             s->cand_p[depth] = perm_q[f][s->cand_p[depth]];
             s->cand_o[depth] = ori_q[f][s->cand_o[depth]];
             s->cand_pp[depth] = pp_q[f][s->cand_pp[depth]];
@@ -177,7 +174,6 @@ static int bounded_search(search_t *s, uint8_t bound, uint32_t *nodes)
                 s->face[depth] = (uint8_t)(f + 1);
                 s->turn[depth] = 0;
             }
-
             const uint8_t child = (uint8_t)(depth + 1);
             s->p[child] = s->cand_p[depth];
             s->o[child] = s->cand_o[depth];
@@ -196,7 +192,6 @@ backtrack:
         --depth;
     }
 }
-
 static int ida_solve_indices(uint16_t p, uint16_t o, uint8_t pp,
                              uint8_t solution[MAX_DEPTH], uint32_t *nodes)
 {
@@ -205,7 +200,6 @@ static int ida_solve_indices(uint16_t p, uint16_t o, uint8_t pp,
     s.o[0] = o;
     s.pp[0] = pp;
     *nodes = 0;
-
     uint8_t bound = heuristic(p, o, pp);
     for (; bound <= MAX_DEPTH; ++bound) {
         const int len = bounded_search(&s, bound, nodes);
@@ -217,7 +211,6 @@ static int ida_solve_indices(uint16_t p, uint16_t o, uint8_t pp,
     }
     return -1;
 }
-
 #ifndef SOLVER_NO_MAIN
 static int ida_solve(const state_t *input, uint8_t solution[MAX_DEPTH],
                      uint32_t *nodes)
@@ -231,7 +224,6 @@ static int output_failed(void)
 {
     return fflush(stdout) != 0 || ferror(stdout);
 }
-
 int main(int argc, char **argv)
 {
     state_t state;
@@ -248,13 +240,11 @@ int main(int argc, char **argv)
         fputs("search failed\n", stderr);
         return 1;
     }
-
     for (int i = 0; i < len; ++i) {
         if (i) putchar(' ');
         fputs(move_names[solution[i]], stdout);
     }
     putchar('\n');
-
 #ifdef SHOW_STATS
     fprintf(stderr, "length=%d nodes=%u root_h=%u\n", len, nodes,
             heuristic(rank_perm(state.p), rank_ori(state.o),
