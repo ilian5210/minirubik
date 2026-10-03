@@ -7,6 +7,8 @@ SAMPLE_STATE := 21345671111111
 VECTORS := tests/solutions.txt
 CHECKER := tests/check_solver
 CHECKER_SRC := tests/check_solver.c
+GATE_CHECKER := tests/check_gates
+GATE_CHECKER_SRC := tests/check_gates.c
 
 # One per rejection path: short, long, cubie digit low, cubie digit high,
 # orientation digit low, orientation digit high, non-digit, duplicate,
@@ -14,7 +16,7 @@ CHECKER_SRC := tests/check_solver.c
 INVALID_STATES := 1234567111111 123456711111111 02345671111111 82345671111111 \
 	12345671111110 12345671111114 1234567111111a 11345671111111 12345671111112
 
-.PHONY: all check clean indent
+.PHONY: all check h1 h2 h3 h4 gates-fast gates clean indent
 
 all: solver mini
 
@@ -29,9 +31,10 @@ mini: mini.c
 $(CHECKER): $(CHECKER_SRC)
 	$(CC) $(CFLAGS) $(CHECKER_SRC) -o $(CHECKER)
 
-# Check semantic correctness instead of requiring one particular optimal path.
-# The C checker verifies that every returned path solves the cube and that its
-# length equals the known optimal length stored in tests/solutions.txt.
+$(GATE_CHECKER): $(GATE_CHECKER_SRC) solver.c pdb_table.h
+	$(CC) $(CFLAGS) $(GATE_CHECKER_SRC) -o $(GATE_CHECKER)
+
+# Fast semantic regression tests. These do not replace H1-H4.
 check: solver $(VECTORS) $(CHECKER)
 	./$(CHECKER) ./solver $(VECTORS)
 	@for bad in $(INVALID_STATES); do \
@@ -51,6 +54,26 @@ check: solver $(VECTORS) $(CHECKER)
 			echo "./solver with stdout closed: expected status 1, got $$status"; exit 1; }
 	@echo "invalid input rejected with status 2, unwritable stdout with status 1"
 
+# Host-side correctness gates required by the assignment.
+h1: $(GATE_CHECKER)
+	./$(GATE_CHECKER) h1
+
+h2: $(GATE_CHECKER)
+	./$(GATE_CHECKER) h2
+
+h3: $(GATE_CHECKER)
+	./$(GATE_CHECKER) h3
+
+h4: $(GATE_CHECKER)
+	./$(GATE_CHECKER) h4
+
+# H1/H2/H4 are cheap. H3 runs the actual search over all 3,674,160 states.
+gates-fast: $(GATE_CHECKER)
+	./$(GATE_CHECKER) fast
+
+gates: $(GATE_CHECKER)
+	./$(GATE_CHECKER) all
+
 indent:
 ifeq ($(CLANG_FORMAT),)
 	$(error clang-format 20 not found)
@@ -60,4 +83,4 @@ endif
 	$(CLANG_FORMAT) -i $(C_SOURCES)
 
 clean:
-	$(RM) solver mini $(CHECKER)
+	$(RM) solver mini $(CHECKER) $(GATE_CHECKER)
