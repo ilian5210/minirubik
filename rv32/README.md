@@ -348,7 +348,29 @@ processor signal values**, or right-click a port and choose **Show value**.
 Use **Clock (F5)** and the stage table to track instructions. The default
 layout hides some control wiring.
 
-An instructive pair in `search_turn` is:
+Actual GUI captures were recorded on October 7 using the renderer-free ELF
+with input `21345671111111`. The startup/parser sequence demonstrates:
+
+| Cycle | Observed behavior | Capture |
+| ---: | --- | --- |
+| 5 | `addi sp,sp,-336` in WB; ALURES=1, register write enabled to x2, result `0x2ceb0` | [Arithmetic](images/pipeline-arithmetic.png) |
+| 15 | `lbu t3,0(a0)` in EX, dependent `addi` in ID; front end held and bubble requested | [Load-use stall](images/pipeline-load-stall.png) |
+| 17 | Load in WB selects MEMREAD=0; WbStage=2 forwarding supplies `0x32` to EX, which computes `0x32-49=1` | [Forwarding](images/pipeline-load-forwarding.png) |
+| 25 | `sb t3,0(a1)` in MEM; write enabled, address `0x2cc70`, data 1; Memory still shows Byte 0=0 | [Before store](images/pipeline-store.png) |
+| 26 | Store in WB has register write disabled; refreshed Memory shows Byte 0=1, neighboring bytes unchanged | [After store](images/pipeline-memory-after.png) |
+
+At cycle 5, x2's new value is on the writeback input and commits on the next
+clock edge. In the cycle-25 screenshot the register write enable belongs to
+the older `or` in WB; the `sb`'s no-register-write control is visible at cycle
+26. Stage occupancy determines which instruction each enable describes.
+
+The Memory table retained its old display immediately after stepping.
+Selecting **Go to section → Address... → 0x2cc70** again refreshed it without
+advancing the processor. This address is the CLI ELF's linked `cube` symbol;
+inspect symbols again after rebuilding, especially for the LED ELF.
+
+The following separate source-based example in `search_turn` is not the
+instruction pair shown in the startup/parser captures:
 
 ```asm
 lhu s9, 0(t0)
@@ -383,13 +405,18 @@ tying these local memory updates to the final solved cube.
 Signal names and enum values were checked against the pinned
 [RV32_5S wiring](https://github.com/mortbopet/Ripes/blob/5b8a616edcb6f0a2ddb07e78951348b72497f1e1/src/processors/RISC-V/rv5s/rv5s.h),
 its `rv5s_hazardunit.h`, and the source tree's `riscv.h`/`rv_control.h`.
-CLI five-stage execution is verified. GUI signal observation and screenshots
-are deferred at the user's request; the walkthrough above is based on the
-pinned processor source and is not a claim of completed GUI observation.
+CLI five-stage execution, actual GUI LED output, and the startup/parser
+signal observations above are verified. The English report in
+[HackMD](https://hackmd.io/@lannn/arch2026-homework1), mirrored in
+[hackmd.md](hackmd.md), includes the captures and stage-by-stage explanation.
 
 ## Reproduction record
 
-Recorded 2026-10-06 on Apple M3, 16 GiB RAM, Darwin 27.0.0 arm64.
+Baseline measurements were recorded 2026-10-06; modulo-three measurements,
+LED checks, regression checks, and GUI captures followed on 2026-10-07.
+Host: Apple M3, 16 GiB RAM, Darwin 27.0.0 arm64.
+Fork baseline: upstream `sysprog21/minirubik` commit
+`3811ad0a87bd490e45099c3cb179ec33caf46cb5` (parent of the first PDB change).
 Cross compiler: `riscv64-elf-gcc` 16.2.0. Native checker: Apple Clang 21.0.0
 with the Command Line Tools SDK. Ripes build:
 `v2.2.6-106-g5b8a616-mac-universal2`, source commit

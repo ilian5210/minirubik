@@ -23,10 +23,14 @@ The final solver computes optimal half-turn-metric solutions for the fixed-corne
 | Linked assembly code, .text | 1,836 bytes |
 | Total .rodata + .data + .bss | 118,436 bytes |
 | Static-data limit | 131,072 bytes |
+| Five-stage GUI pipeline observation | Arithmetic writeback, load-use stall/forwarding, and byte-store update captured |
+| LED playback | Actual input and solved frames captured after eleven computed moves |
 
 The solver, CLI measurements, and LED renderer are implemented. The LED net has been executed in the actual five-stage GUI and restores all six faces after the solver's eleven moves. The renderer is compiled out of every instruction-budget measurement. GUI pipeline evidence is recorded separately below.
 
 Project: [ilian5210/minirubik](https://github.com/ilian5210/minirubik). The published [RV32I source](https://github.com/ilian5210/minirubik/blob/d3b3c60/solver_rv32.S) and [target verifier](https://github.com/ilian5210/minirubik/blob/d3b3c60/tests/check_rv32.c) are pinned to commit [d3b3c60](https://github.com/ilian5210/minirubik/commit/d3b3c60). Build and GUI instructions are in [rv32/README.md](https://github.com/ilian5210/minirubik/blob/main/rv32/README.md).
+
+The fork baseline is upstream [sysprog21/minirubik commit 3811ad0a87bd490e45099c3cb179ec33caf46cb5](https://github.com/sysprog21/minirubik/commit/3811ad0a87bd490e45099c3cb179ec33caf46cb5), “Import from internal tree.” This revision is the parent of the fork's first PDB change, [fecee00](https://github.com/ilian5210/minirubik/commit/fecee00). The hosted BFS baseline discussed below refers to that upstream revision, rather than an unpinned current branch.
 
 ## Stage 1 — Characterizing the hosted baseline
 
@@ -370,39 +374,56 @@ Missing telemetry, abnormal termination, wrong target status, a wrong length, a 
 
 ## Instruction-level pipeline analysis
 
-This section explains the pinned five-stage source wiring. CLI execution is verified; in-GUI signal observation and screenshots remain pending.
+On October 7, the renderer-free solver ELF was loaded into the actual five-stage GUI with forwarding and hazard detection, M/C disabled, the **Extended** layout, and **View → Show processor signal values** enabled. The input was `21345671111111`. The following captures show startup and parsing instructions; the search-loop example discussed afterward is a separate source-based explanation.
 
-An adjacent load/store pair in search_turn is:
+The addresses below belong to this linked CLI ELF: `input_state = 0x10000`, `cube = 0x2cc70`, and `stack_end = 0x2ceb0`. They are inspection results rather than constants required by the solver. Rebuilding with LED support can move these symbols.
 
-```asm
-lhu s9, 0(t0)
-sw  s9, 20(s0)
-```
+| Instruction and PC | IF | ID | EX | MEM | WB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `addi sp,sp,-336`, 0x004 | 1 | 2 | 3 | 4 | 5 |
+| `lbu t3,0(a0)`, 0x194 | 13 | 14 | 15 | 16 | 17 |
+| `addi t3,t3,-49`, 0x198 | 14 | 15–16 | 17 | 18 | 19 |
+| `sb t3,0(a1)`, 0x1b4 | 22 | 23 | 24 | 25 | 26 |
 
-The load reads the new permutation rank from its face transition row. The store saves that candidate in the parent frame, ensuring that the next repeated quarter turn starts from the correct coordinate.
+These cycle numbers describe the stage occupancy before the next clock edge. A write enabled in WB or MEM takes effect on that edge. The selected cycles below capture the decisive control and data signals.
 
-| Stage | Unsigned halfword load | Dependent word store |
-| --- | --- | --- |
-| IF | Fetch instruction, normally advance PC by four | Fetch next instruction |
-| ID | Read t0 and decode load controls | Read s0 and s9; detect dependence on the load |
-| EX | Compute t0+0 | After the stall, compute s0+20; obtain forwarded store data |
-| MEM | Read two bytes and zero-extend | Write four bytes at s0+20 |
-| WB | Select memory result and write s9 | No register write |
+### Arithmetic writeback
 
-The [processor wiring](https://github.com/mortbopet/Ripes/blob/5b8a616edcb6f0a2ddb07e78951348b72497f1e1/src/processors/RISC-V/rv5s/rv5s.h) connects load writeback to the memory-result mux input and store enable to data memory. The [control definitions](https://github.com/mortbopet/Ripes/blob/5b8a616edcb6f0a2ddb07e78951348b72497f1e1/src/processors/RISC-V/rv_control.h) and [mux enums](https://github.com/mortbopet/Ripes/blob/5b8a616edcb6f0a2ddb07e78951348b72497f1e1/src/processors/RISC-V/riscv.h) identify these useful signals:
+The preceding `auipc sp,0x2d` establishes `0x2d000` in x2. The startup instruction at 0x004 adjusts it by −336, giving `0x2ceb0`. IF fetches the instruction; ID reads x2 and decodes the immediate; EX adds the register operand and sign-extended immediate; MEM carries the result without a memory write; WB selects the ALU result and writes x2.
 
-| Signal | Meaning for the relevant instruction |
-| --- | --- |
-| alu_op2_src.select | IMM=1 for load/store address addition |
-| reg_wr_src.select | MEMREAD=0 for load, ALURES=1 for arithmetic |
-| memwb_reg.reg_do_write_out | One for load register writeback; zero for store |
-| exmem_reg.mem_do_write_out | One for store memory update |
+At cycle 5, the instruction is in WB. The writeback mux selects **ALURES=1**, its result is `0x2ceb0`, and the register file has **wr_en=1**, **wr_addr=2**. The register panel still shows the previous stack value at this instant because the enabled write commits on the following clock edge. The later cycle-26 capture shows x2 holding `0x2ceb0`.
 
-The [hazard unit](https://github.com/mortbopet/Ripes/blob/5b8a616edcb6f0a2ddb07e78951348b72497f1e1/src/processors/RISC-V/rv5s/rv5s_hazardunit.h) detects a load in EX whose destination is an ID source register. It deasserts hazardFEEnable to hold the front end and asserts hazardIDEXClear to insert a bubble. Once the load progresses, forwarding supplies the dependent store value.
+![Cycle 5: arithmetic instruction in WB, ALU-result writeback enabled](https://hackmd.io/_uploads/HybkCA7oMx.jpg)
 
-Later, sb t1,0(s6) writes one solution byte containing 3×face+turn, in 0..8. Frame advancement decrements remaining depth; backtracking restores parent coordinates. The target replay check connects these local updates to the final solved state.
+### Load-use stall and forwarding
 
-To inspect this in GUI later, choose the five-stage model with forwarding/hazard detection and its Extended layout. Show processor signal values, step with Clock/F6, and compare stage-table entries with register and memory changes. These are reproduction instructions, not completed screenshot evidence.
+The first input character is ASCII `'2'`, or `0x32`. The parser reads it with `lbu t3,0(a0)` and converts it to internal cubie index one with `addi t3,t3,-49`. IF and ID identify the instruction and base register; the load's EX stage calculates `a0+0`; MEM reads and zero-extends one byte; WB selects the memory result and enables writing x28 (`t3`).
+
+At cycle 15, the load is in EX and its dependent `addi` is in ID. **hazardFEEnable=0** holds the PC and IF/ID, while **hazardIDEXClear=1** inserts a bubble. At cycle 16 the consumer remains in ID and the bubble occupies EX. This prevents it from computing with the old value of `t3`.
+
+![Cycle 15: load in EX, dependent addi in ID, front end held](https://hackmd.io/_uploads/rJx41kNjfg.jpg)
+
+At cycle 17, the load is in WB and the consumer is in EX. The writeback mux selects **MEMREAD=0**, with **data=0x32**, **wr_en=1**, and **wr_addr=28**. The EX operand-forwarding mux selects **WbStage=2**, supplying the newly loaded value directly to the ALU. The immediate operand is −49 and the EX result is **1**. The stall followed by forwarding therefore preserves the intended ASCII-to-index conversion.
+
+![Cycle 17: memory-result writeback and WB-to-EX forwarding produce index one](https://hackmd.io/_uploads/HJ_oe1Vsfx.jpg)
+
+### Byte store and the observed memory update
+
+After the range and duplicate checks, `sb t3,0(a1)` stores that index in the first permutation byte. IF fetches it, ID reads the destination base and source data, EX adds base plus zero, MEM enables a one-byte write, and WB performs no register write.
+
+At cycle 25, this `sb` is in MEM. Data memory shows **wr_en=1**, **addr=0x2cc70**, and **data_in=1**. The Memory table at the same address still shows word `0x00000000` and Byte 0 `0x00`, before the write edge. The register-file write enable is also one in this screenshot, but belongs to the older `or` instruction in WB; each stage's control must be associated with its own instruction.
+
+![Cycle 25: sb enables a one-byte write while Memory still contains zero](https://hackmd.io/_uploads/rJ8hyJ4ozx.jpg)
+
+After one Clock, cycle 26 has the `sb` in WB with **register wr_en=0**. Reopening **Memory → Go to section → Address... → 0x2cc70** refreshes the table: the word is now **0x00000001**, Byte 0 is **0x01**, and Bytes 1–3 remain **0x00**. The table initially retained the old display after stepping, so the before/after evidence uses the explicitly refreshed address view. No additional clock was taken during this refresh.
+
+![Cycle 26: Memory shows the stored byte 0x01 and the store has no register writeback](https://hackmd.io/_uploads/r1LVW14ife.jpg)
+
+This is the expected representation of the first input cubie: digit two becomes internal index one. The decoded SB control specifies a one-byte write, and the refreshed table agrees with that update. The independently tested parser and final cubie replay provide broader correctness checks beyond this single observed update.
+
+The [processor wiring](https://github.com/mortbopet/Ripes/blob/5b8a616edcb6f0a2ddb07e78951348b72497f1e1/src/processors/RISC-V/rv5s/rv5s.h), [control definitions](https://github.com/mortbopet/Ripes/blob/5b8a616edcb6f0a2ddb07e78951348b72497f1e1/src/processors/RISC-V/rv_control.h), [mux enums](https://github.com/mortbopet/Ripes/blob/5b8a616edcb6f0a2ddb07e78951348b72497f1e1/src/processors/RISC-V/riscv.h), and [hazard unit](https://github.com/mortbopet/Ripes/blob/5b8a616edcb6f0a2ddb07e78951348b72497f1e1/src/processors/RISC-V/rv5s/rv5s_hazardunit.h) explain the observed selectors and enables. In particular, `memwb_reg.reg_do_write_out` controls register writeback, while `exmem_reg.mem_do_write_out` controls the memory write. They apply to different instructions in the same cycle.
+
+In the search loop, the separate pair `lhu s9,0(t0)` / `sw s9,20(s0)` follows the same load-use hazard mechanism: the load obtains a new permutation coordinate from a transition row and the store saves it in the parent frame. Later, `sb t1,0(s6)` writes a solution move byte in 0..8. Frame advancement and backtracking preserve search coordinates; independent target replay checks that the resulting path solves the cube. These search operations are explained from the assembly and processor source, rather than being mislabeled as the startup/parser screenshots above.
 
 ## LED renderer and live solution playback
 
@@ -437,9 +458,9 @@ The GUI ELF has **2,368 bytes of .text** and **118,596 bytes of static data**, s
 
 The actual five-stage GUI was run with `21345671111111`, M/C disabled. Its initial and solved LED frames are shown below. On this macOS build the embedded I/O view sometimes retained an old painting; floating the LED window forced repainting and allowed live updates. The reproduction instructions therefore use the floating window.
 
-![Actual input state on the Ripes LED peripheral](https://raw.githubusercontent.com/ilian5210/minirubik/main/rv32/images/led-input.png)
-
-![Actual solved state on the Ripes LED peripheral](https://raw.githubusercontent.com/ilian5210/minirubik/main/rv32/images/led-solved.png)
+| Input: 21345671111111 | After the eleven solution moves |
+| --- | --- |
+| <img alt="Actual input state on the Ripes LED peripheral" src="https://raw.githubusercontent.com/ilian5210/minirubik/main/rv32/images/led-input.png" width="300"> | <img alt="Actual solved state on the Ripes LED peripheral" src="https://raw.githubusercontent.com/ilian5210/minirubik/main/rv32/images/led-solved.png" width="300"> |
 
 ## Reproduction and development evidence
 
@@ -476,7 +497,7 @@ Generated logs stay under build/rv32/: gates-current.log, distance11/distance11.
 
 ### Pinned environment
 
-Measurements were taken on October 6, 2026, on Apple M3 with 16 GiB RAM, Darwin 27.0.0 arm64. The cross compiler is riscv64-elf-gcc 16.2.0; the native checker uses Apple Clang 21.0.0 with its matching Command Line Tools SDK.
+The exhaustive distance-11 run, compiler comparison, and simulator probes were recorded on October 6, 2026. Modulo-three measurements, LED verification, regression checks, and GUI pipeline captures followed on October 7 on the same Apple M3 with 16 GiB RAM, Darwin 27.0.0 arm64. The cross compiler is riscv64-elf-gcc 16.2.0; the native checker uses Apple Clang 21.0.0 with its matching Command Line Tools SDK.
 
 Ripes build: v2.2.6-106-g5b8a616-mac-universal2. Source revision: 5b8a616edcb6f0a2ddb07e78951348b72497f1e1. VSRTL revision: 8497dd14fe80e57efcff4c424a9a3b6363d93eb7.
 
@@ -504,5 +525,6 @@ make rv32-info records flags, compiler versions, source hashes, and ELF hashes f
 | 2026-10-03 14:39 | [a28d4fc](https://github.com/ilian5210/minirubik/commit/a28d4fc): H1–H4 verification |
 | 2026-10-06 | Local RV32 port, exhaustive distance-11 run, full C comparison, and simulator probes |
 | 2026-10-07 | [d3b3c60](https://github.com/ilian5210/minirubik/commit/d3b3c60): publish RV32 solver, live LED renderer, target verifier, and measured modulo-three variants |
+| 2026-10-07 | Actual GUI LED frames and pipeline captures added to this report, including the refreshed byte-store before/after observation |
 
 This note consolidates work that was developed and tested locally. The repository commits and raw measurement artifacts provide the development evidence; this table does not imply that historical HackMD revisions already existed. The RV32 sources are now published, and the note is updated as LED and pipeline evidence becomes available rather than assigning artificial dates to earlier revisions.
