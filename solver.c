@@ -1,6 +1,8 @@
 #include <stdint.h>
+#ifndef SOLVER_FREESTANDING
 #include <stdio.h>
 #include <string.h>
+#endif
 
 #define CUBIES 7
 #define PERMUTATIONS 5040
@@ -16,7 +18,7 @@ typedef struct {
 } state_t;
 
 #include "pdb_table.h"
-#ifndef SOLVER_NO_MAIN
+#if !defined(SOLVER_NO_MAIN) || defined(SOLVER_FREESTANDING)
 static const char move_names[MOVES][3] = {
     "R", "R2", "R'", "B", "B2", "B'", "D", "D2", "D'"
 };
@@ -211,7 +213,7 @@ static int ida_solve_indices(uint16_t p, uint16_t o, uint8_t pp,
     }
     return -1;
 }
-#ifndef SOLVER_NO_MAIN
+#if !defined(SOLVER_NO_MAIN) || defined(SOLVER_FREESTANDING)
 static int ida_solve(const state_t *input, uint8_t solution[MAX_DEPTH],
                      uint32_t *nodes)
 {
@@ -219,7 +221,9 @@ static int ida_solve(const state_t *input, uint8_t solution[MAX_DEPTH],
                              rank_partial_from_perm(input->p),
                              solution, nodes);
 }
+#endif
 
+#ifndef SOLVER_NO_MAIN
 static int output_failed(void)
 {
     return fflush(stdout) != 0 || ferror(stdout);

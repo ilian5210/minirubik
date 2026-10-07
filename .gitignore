@@ -3,3 +3,4 @@
 *.swp
 solver
 mini
+build/rv32/
